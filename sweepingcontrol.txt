@@ -1,0 +1,484 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%  KURAMOTO-II (theta, omega) + EVENT-TRIGGERED PINNING IMPULSES
+%  FULL CENTRAL vs ERROR COMPARISON
+%  Next step: 2 networks disconnected, only one node connected to the
+%  other.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+clear; clc; close all;
+rng(1);
+
+%% ====================== USER CHOICES ====================================
+N  = 100;
+
+t0     = 0;
+Tfinal = 20;
+dt     = 1e-3;
+steps  = floor((Tfinal - t0)/dt);
+
+D = 2*ones(N,1);
+M = 5*ones(N,1);
+
+w0 = 0.2*randn(N,1);
+
+c0   = 3;
+cmin = 0.5;
+cmax = 20;
+rho_target = 0.25;
+k_c  = 0.2;
+
+use_impulses = true;
+Tmin = 0.05;
+
+eta_drop = 0.30;
+dmin = 0.2;
+dmax = 0.95;
+
+pin_count = 100;
+alpha_delta = 1e-3;
+
+% OPTIMIZATION GRID
+alpha_grid = [1.0005 1.001 1.002 1.005 1.01 1.02];
+beta_grid  = [0.05 0.1 0.2 0.35 0.5 0.8 1.2 1.8 2.5];
+
+V_threshold = 1;
+
+%% ===== CENTRAL ADAPTIVE AGGRESSIVENESS =================================
+use_central_beta_adapt = false;
+beta_min = 0.05;
+beta_max = 6.0;
+k_beta   = 2.5;
+Vref     = 0.05;
+
+use_central_eta_adapt = false;
+eta_min = 0.05;
+eta_max = 0.30;
+k_eta   = 6.0;
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% ====================== BUILD GRAPH =====================================
+Adj = zeros(N);
+for i = 1:N
+    j = mod(i, N) + 1;
+    Adj(i,j)=1; Adj(j,i)=1;
+end
+
+extra_edges = N;
+tries = 0;
+while extra_edges > 0 && tries < 10*N*N
+    i = randi(N); j = randi(N);
+    tries = tries + 1;
+    if i ~= j && Adj(i,j) == 0
+        Adj(i,j)=1; Adj(j,i)=1;
+        extra_edges = extra_edges - 1;
+    end
+end
+
+deg = sum(Adj,2);
+L = diag(deg) - Adj;
+
+[~, idx_deg] = sort(deg,'descend');
+pinned_central = sort(idx_deg(1:pin_count));
+
+%% ====================== INITIAL CONDITIONS ===============================
+theta0 = 0.5*randn(N,1);
+omega0 = 0.1*randn(N,1);
+x0 = [theta0; omega0];
+
+z_theta = 0;
+z_omega = 0;
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% ====================== OPTIMIZATION CENTRAL =============================
+fprintf('\n=== Optimizing CENTRALITY-BASED ===\n');
+bestC = struct('alpha_scale',NaN,'beta0',NaN,'Tconv',Inf,'V',[],'tt',[]);
+
+for a = 1:numel(alpha_grid)
+    for b = 1:numel(beta_grid)
+
+        out = simulate_run("central", x0, pinned_central, pin_count, ...
+            alpha_grid(a), beta_grid(b), alpha_delta, ...
+            N,t0,Tfinal,dt,steps,D,M,w0,Adj,L,z_theta,z_omega, ...
+            use_impulses,Tmin,eta_drop,dmin,dmax,c0,cmin,cmax,rho_target,k_c, ...
+            use_central_beta_adapt,beta_min,beta_max,k_beta,Vref, ...
+            use_central_eta_adapt,eta_min,eta_max,k_eta,V_threshold);
+
+        if out.Tconv < bestC.Tconv
+            bestC.alpha_scale = alpha_grid(a);
+            bestC.beta0       = beta_grid(b);
+            bestC.Tconv       = out.Tconv;
+            bestC.V           = out.V;
+            bestC.tt          = out.tt;
+        end
+    end
+end
+
+fprintf('Best CENTRAL: alpha=%.6g, beta=%.6g, Tconv=%.4f s\n', ...
+    bestC.alpha_scale, bestC.beta0, bestC.Tconv);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% ====================== OPTIMIZATION ERROR ===============================
+fprintf('\n=== Optimizing ERROR-BASED ===\n');
+bestE = struct('alpha_scale',NaN,'beta0',NaN,'Tconv',Inf,'V',[],'tt',[]);
+
+for a = 1:numel(alpha_grid)
+    for b = 1:numel(beta_grid)
+
+        out = simulate_run("error", x0, pinned_central, pin_count, ...
+            alpha_grid(a), beta_grid(b), alpha_delta, ...
+            N,t0,Tfinal,dt,steps,D,M,w0,Adj,L,z_theta,z_omega, ...
+            use_impulses,Tmin,eta_drop,dmin,dmax,c0,cmin,cmax,rho_target,k_c, ...
+            use_central_beta_adapt,beta_min,beta_max,k_beta,Vref, ...
+            use_central_eta_adapt,eta_min,eta_max,k_eta,V_threshold);
+
+        if out.Tconv < bestE.Tconv
+            bestE.alpha_scale = alpha_grid(a);
+            bestE.beta0       = beta_grid(b);
+            bestE.Tconv       = out.Tconv;
+            bestE.V           = out.V;
+            bestE.tt          = out.tt;
+        end
+    end
+end
+
+fprintf('Best ERROR: alpha=%.6g, beta=%.6g, Tconv=%.4f s\n', ...
+    bestE.alpha_scale, bestE.beta0, bestE.Tconv);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% ====================== PRINT SPEED MULTIPLE =============================
+speed_ratio = bestC.Tconv / bestE.Tconv;
+fprintf('\nERROR is %.2f times faster than CENTRAL\n', speed_ratio);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% ====================== ENERGY COMPARISON PLOT ===========================
+figure;
+plot(bestC.tt,bestC.V,'LineWidth',2); hold on;
+plot(bestE.tt,bestE.V,'LineWidth',2);
+yline(V_threshold,'--','LineWidth',1.5);
+grid on;
+xlabel('Time (s)');
+ylabel('V(t)');
+title('Central vs Error-Based Energy');
+legend('Central','Error','Threshold');
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% ====================== FULL STATE VISUALIZATION =========================
+
+outC_full = simulate_full("central",x0,pinned_central,pin_count, ...
+    bestC.alpha_scale,bestC.beta0,alpha_delta, ...
+    N,t0,Tfinal,dt,steps,D,M,w0,Adj,L,z_theta,z_omega, ...
+    use_impulses,Tmin,eta_drop,dmin,dmax,c0,cmin,cmax,rho_target,k_c, ...
+    use_central_beta_adapt,beta_min,beta_max,k_beta,Vref, ...
+    use_central_eta_adapt,eta_min,eta_max,k_eta);
+
+outE_full = simulate_full("error",x0,pinned_central,pin_count, ...
+    bestE.alpha_scale,bestE.beta0,alpha_delta, ...
+    N,t0,Tfinal,dt,steps,D,M,w0,Adj,L,z_theta,z_omega, ...
+    use_impulses,Tmin,eta_drop,dmin,dmax,c0,cmin,cmax,rho_target,k_c, ...
+    use_central_beta_adapt,beta_min,beta_max,k_beta,Vref, ...
+    use_central_eta_adapt,eta_min,eta_max,k_eta);
+
+% CENTRAL
+figure; plot(outC_full.tt,outC_full.TH.'); title('CENTRAL Phase');
+figure; plot(outC_full.tt,outC_full.OM.'); title('CENTRAL Frequency');
+figure; plot(outC_full.tt,outC_full.V); title('CENTRAL Energy');
+figure; bar(outC_full.impulse_count); title('CENTRAL Impulses');
+
+% ERROR
+figure; plot(outE_full.tt,outE_full.TH.'); title('ERROR Phase');
+figure; plot(outE_full.tt,outE_full.OM.'); title('ERROR Frequency');
+figure; plot(outE_full.tt,outE_full.V); title('ERROR Energy');
+figure; bar(outE_full.impulse_count); title('ERROR Impulses');
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% ====================== SIM FUNCTIONS ===================================
+function out = simulate_run( ...
+mode,x0,pinned_central,pin_count,alpha_scale,beta0,alpha_delta, ...
+N,t0,Tfinal,dt,steps,D,M,w0,Adj,L,z_theta,z_omega, ...
+use_impulses,Tmin,eta_drop,dmin,dmax,c0,cmin,cmax,rho_target,k_c, ...
+use_central_beta_adapt,beta_min,beta_max,k_beta,Vref, ...
+use_central_eta_adapt,eta_min,eta_max,k_eta,V_threshold)
+
+x=x0; alpha=zeros(N,1); last_impulse=-inf(N,1);
+V_all=zeros(1,steps); tt=linspace(t0,Tfinal,steps);
+c=c0; t=t0; Tconv=Inf; converged=false;
+
+for k=1:steps
+theta=x(1:N); omega=x(N+1:end);
+e_theta=theta-z_theta; e_omega=omega-z_omega;
+V=sum(e_theta.^2+e_omega.^2); V_all(k)=V;
+
+if ~converged && V<V_threshold
+converged=true; Tconv=t; end
+
+if k>=2 && V_all(k)>1e-12 && V_all(k-1)>1e-12
+rho_est=-(1/dt)*log(V_all(k)/V_all(k-1));
+c=c+k_c*(rho_target-rho_est)*dt;
+c=min(cmax,max(cmin,c));
+end
+
+if use_impulses
+if mode=="central"
+pinned_now=pinned_central(:).';
+else
+localV=e_theta.^2+e_omega.^2;
+[~,idx]=sort(localV,'descend');
+pinned_now=idx(1:pin_count).';
+end
+
+for ii=1:numel(pinned_now)
+i=pinned_now(ii);
+if alpha(i)<=0
+ei0=[theta(i)-z_theta;omega(i)-z_omega];
+Vi0=(ei0.'*ei0);
+alpha(i)=alpha_scale*(1+alpha_delta)*Vi0+1e-12;
+end
+ei=[theta(i)-z_theta;omega(i)-z_omega];
+Vi=ei.'*ei;
+
+beta_eff=beta0;
+if mode=="central" && use_central_beta_adapt
+beta_eff=beta0+k_beta*log(1+Vi/max(Vref,1e-12));
+beta_eff=min(beta_max,max(beta_min,beta_eff));
+end
+
+thr=alpha(i)*exp(-beta_eff*(t-t0));
+
+eta_eff=eta_drop;
+if mode=="central" && use_central_eta_adapt
+eta_eff=eta_min+(eta_max-eta_min)*exp(-k_eta*Vi);
+eta_eff=min(eta_max,max(eta_min,eta_eff));
+end
+
+if (t-last_impulse(i))>=Tmin && Vi>=thr
+d_req=1-sqrt(max(eta_eff*thr,1e-12)/max(Vi,1e-12));
+d_i=min(dmax,max(dmin,d_req));
+ei_new=(1-d_i)*ei;
+x(i)=z_theta+ei_new(1);
+x(i+N)=z_omega+ei_new(2);
+last_impulse(i)=t;
+end
+end
+end
+
+dtheta=omega;
+domega=-(D./M).*omega-(c./M).*(L*theta)+w0./M;
+x=x+dt*[dtheta;domega];
+t=t+dt;
+end
+
+out.V=V_all; out.tt=tt; out.Tconv=Tconv;
+end
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+function out = simulate_full( ...
+mode,x0,pinned_central,pin_count,alpha_scale,beta0,alpha_delta, ...
+N,t0,Tfinal,dt,steps,D,M,w0,Adj,L,z_theta,z_omega, ...
+use_impulses,Tmin,eta_drop,dmin,dmax,c0,cmin,cmax,rho_target,k_c, ...
+use_central_beta_adapt,beta_min,beta_max,k_beta,Vref, ...
+use_central_eta_adapt,eta_min,eta_max,k_eta)
+
+x = x0;
+alpha = zeros(N,1);
+last_impulse = -inf(N,1);
+impulse_count = zeros(N,1);
+
+TH = zeros(N,steps);
+OM = zeros(N,steps);
+V_all = zeros(1,steps);
+
+c = c0;
+t = t0;
+
+for k = 1:steps
+
+    theta = x(1:N);
+    omega = x(N+1:end);
+
+    e_theta = theta - z_theta;
+    e_omega = omega - z_omega;
+    V_all(k) = sum(e_theta.^2 + e_omega.^2);
+
+    % Coupling autotune
+    if k>=2 && V_all(k)>1e-12 && V_all(k-1)>1e-12
+        rho_est = -(1/dt)*log(V_all(k)/V_all(k-1));
+        c = c + k_c*(rho_target - rho_est)*dt;
+        c = min(cmax,max(cmin,c));
+    end
+
+    % Pin selection
+    if mode=="central"
+        pinned_now = pinned_central(:).';
+    else
+        localV = e_theta.^2 + e_omega.^2;
+        [~,idx] = sort(localV,'descend');
+        pinned_now = idx(1:pin_count).';
+    end
+
+    for ii = 1:numel(pinned_now)
+        i = pinned_now(ii);
+
+        if alpha(i)<=0
+            ei0 = [theta(i)-z_theta; omega(i)-z_omega];
+            Vi0 = (ei0.'*ei0);
+            alpha(i) = alpha_scale*(1+alpha_delta)*Vi0 + 1e-12;
+        end
+
+        ei = [theta(i)-z_theta; omega(i)-z_omega];
+        Vi = ei.'*ei;
+
+        beta_eff = beta0;
+        if mode=="central" && use_central_beta_adapt
+            beta_eff = beta0 + k_beta*log(1 + Vi/max(Vref,1e-12));
+            beta_eff = min(beta_max,max(beta_min,beta_eff));
+        end
+
+        thr = alpha(i)*exp(-beta_eff*(t - t0));
+
+        eta_eff = eta_drop;
+        if mode=="central" && use_central_eta_adapt
+            eta_eff = eta_min + (eta_max - eta_min)*exp(-k_eta*Vi);
+            eta_eff = min(eta_max,max(eta_min,eta_eff));
+        end
+
+        if (t-last_impulse(i))>=Tmin && Vi>=thr
+            d_req = 1 - sqrt(max(eta_eff*thr,1e-12)/max(Vi,1e-12));
+            d_i   = min(dmax,max(dmin,d_req));
+
+            ei_new = (1-d_i)*ei;
+            x(i)   = z_theta + ei_new(1);
+            x(i+N) = z_omega + ei_new(2);
+
+            last_impulse(i) = t;
+            impulse_count(i) = impulse_count(i) + 1;
+        end
+    end
+
+    % Continuous dynamics
+    dtheta = omega;
+    domega = -(D./M).*omega - (c./M).*(L*theta) + w0./M;
+
+    x = x + dt*[dtheta; domega];
+
+    TH(:,k) = x(1:N);
+    OM(:,k) = x(N+1:end);
+
+    t = t + dt;
+end
+
+out.TH = TH;
+out.OM = OM;
+out.V  = V_all;
+out.tt = linspace(t0,Tfinal,steps);
+out.impulse_count = impulse_count;
+
+end
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% ================= ACTUATOR BUDGET SWEEP ===============================
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+fprintf('\n\n================ ACTUATOR SWEEP STUDY ================\n');
+
+pin_sweep = [1 50 100];
+
+ImpulseCentral_sweep = zeros(size(pin_sweep));
+ImpulseError_sweep   = zeros(size(pin_sweep));
+Tcentral_sweep = zeros(size(pin_sweep));
+Terror_sweep   = zeros(size(pin_sweep));
+
+for p = 1:length(pin_sweep)
+
+    pin_count = pin_sweep(p);
+    fprintf('\n---- Pin count = %d ----\n', pin_count);
+
+    % Recompute central pinned nodes for this budget
+    [~, idx_deg] = sort(deg,'descend');
+    pinned_central = sort(idx_deg(1:pin_count));
+
+    % ---------------- CENTRAL OPT ----------------
+    bestC_T = Inf;
+
+    for a = 1:numel(alpha_grid)
+        for b = 1:numel(beta_grid)
+
+            out = simulate_run("central", x0, pinned_central, pin_count, ...
+                alpha_grid(a), beta_grid(b), alpha_delta, ...
+                N,t0,Tfinal,dt,steps,D,M,w0,Adj,L,z_theta,z_omega, ...
+                use_impulses,Tmin,eta_drop,dmin,dmax,c0,cmin,cmax,rho_target,k_c, ...
+                use_central_beta_adapt,beta_min,beta_max,k_beta,Vref, ...
+                use_central_eta_adapt,eta_min,eta_max,k_eta,V_threshold);
+
+            if out.Tconv < bestC_T
+                bestC_T = out.Tconv;
+            end
+        end
+    end
+
+    % ---------------- ERROR OPT ----------------
+    bestE_T = Inf;
+
+    for a = 1:numel(alpha_grid)
+        for b = 1:numel(beta_grid)
+
+            out = simulate_run("error", x0, pinned_central, pin_count, ...
+                alpha_grid(a), beta_grid(b), alpha_delta, ...
+                N,t0,Tfinal,dt,steps,D,M,w0,Adj,L,z_theta,z_omega, ...
+                use_impulses,Tmin,eta_drop,dmin,dmax,c0,cmin,cmax,rho_target,k_c, ...
+                use_central_beta_adapt,beta_min,beta_max,k_beta,Vref, ...
+                use_central_eta_adapt,eta_min,eta_max,k_eta,V_threshold);
+
+            if out.Tconv < bestE_T
+                bestE_T = out.Tconv;
+            end
+        end
+    end
+
+    Tcentral_sweep(p) = bestC_T;
+    Terror_sweep(p)   = bestE_T;
+
+    fprintf('Central T = %.4f s\n', bestC_T);
+    fprintf('Error   T = %.4f s\n', bestE_T);
+
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% ================= PLOT: Tconv vs Pin Count ============================
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+figure;
+plot(pin_sweep, Tcentral_sweep,'-o','LineWidth',2); hold on;
+plot(pin_sweep, Terror_sweep,'-s','LineWidth',2);
+grid on;
+xlabel('Pin Count');
+ylabel('Convergence Time (s)');
+title('Tconv vs Actuator Budget');
+legend('Central','Error');
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% ================= SPEED RATIO PLOT ====================================
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+speed_ratio = Tcentral_sweep ./ Terror_sweep;
+
+figure;
+plot(pin_sweep, speed_ratio,'-d','LineWidth',2);
+yline(1,'--','LineWidth',1.5);
+grid on;
+xlabel('Pin Count');
+ylabel('Central / Error Speed Ratio');
+title('Speed Ratio vs Actuator Budget');
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% ================= FIND CROSSOVER POINT ================================
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+idx_cross = find(Tcentral_sweep <= Terror_sweep,1);
+
+if ~isempty(idx_cross)
+    fprintf('\nCROSSOVER OCCURS AT pin_count = %d\n', ...
+        pin_sweep(idx_cross));
+else
+    fprintf('\nNo crossover: Error-based dominates for all tested budgets.\n');
+end
+
+fprintf('=========================================================\n\n');
